@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-core \
     libreoffice-common \
     libreoffice-script-provider-python \
+    libreoffice-java-common \
     python3-uno \
     fonts-opensymbol \
     libglib2.0-0 \
@@ -17,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     libxrender1 \
     netcat-openbsd \
+    default-jre-headless \
     python3 \
     python3-pip \
     python3-venv \
@@ -28,6 +30,14 @@ RUN soffice --headless --version
 
 # Test that python3-uno works
 RUN python3 -c "import uno; print('uno OK')"
+
+# Test that soffice can actually convert a WordML file
+RUN mkdir -p /tmp/lo_test && \
+    echo '<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Word.Document"?><w:wordDocument xmlns:w="http://schemas.microsoft.com/office/word/2003/wordml"><w:body><w:p><w:r><w:t>test</w:t></w:r></w:p></w:body></w:wordDocument>' > /tmp/lo_test/test.doc && \
+    soffice -env:UserInstallation=file:///tmp/lo_test/profile --headless --norestore --convert-to docx --outdir /tmp/lo_test /tmp/lo_test/test.doc && \
+    ls -la /tmp/lo_test/test.docx && \
+    echo "WordML conversion: OK" && \
+    rm -rf /tmp/lo_test
 
 # Install Flask app in a venv
 RUN python3 -m venv /app/venv --system-site-packages
