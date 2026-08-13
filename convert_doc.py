@@ -11,13 +11,16 @@ import glob
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Use venv python which has lxml + python-docx installed
+VENV_PYTHON = '/app/venv/bin/python3'
+PYTHON = VENV_PYTHON if os.path.exists(VENV_PYTHON) else sys.executable
 
 
 def convert_wordml(input_path, output_path):
     """Convert WordML XML .doc via Python (fast, no LibreOffice)."""
     wordml_script = os.path.join(SCRIPT_DIR, 'convert_wordml.py')
     result = subprocess.run(
-        [sys.executable, wordml_script, input_path, output_path],
+        [PYTHON, wordml_script, input_path, output_path],
         capture_output=True, timeout=30
     )
     print(result.stderr.decode('utf-8', errors='replace'), file=sys.stderr)
