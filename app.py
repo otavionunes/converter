@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5MB
-PYTHON3 = '/usr/bin/python3'
+PYTHON3 = '/app/venv/bin/python3'  # venv with --system-site-packages has python3-uno
 CONVERT_UNO = '/app/convert_uno.py'
 JOBS_DIR = '/tmp/ewaad_jobs'
 os.makedirs(JOBS_DIR, exist_ok=True)

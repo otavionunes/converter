@@ -5,6 +5,10 @@ soffice --headless --norestore --nolockcheck \
     --accept="socket,host=localhost,port=2002,tcpNoDelay=1;urp;StarOffice.ServiceManager" &
 LO_PID=$!
 
+# Verify python3-uno is accessible from venv
+echo "Checking python3-uno..."
+/app/venv/bin/python3 -c "import uno; print('uno OK')" 2>&1 || echo "WARNING: uno not importable"
+
 # Wait up to 80s for port 2002
 for i in $(seq 1 40); do
     sleep 2
@@ -19,7 +23,7 @@ for i in $(seq 1 40); do
     echo "  waiting... ($i/40)"
 done
 
-# Start gunicorn with sync+threads (gevent blocks Python threads with subprocess)
+# Start gunicorn with gthread (sync+threads, no GIL issues with Popen)
 PORT=${PORT:-8080}
 exec gunicorn \
     --bind "0.0.0.0:$PORT" \

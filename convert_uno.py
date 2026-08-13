@@ -1,15 +1,22 @@
+#!/usr/bin/env python3
 """
 convert_uno.py — Convert a .doc to .docx via a running LibreOffice UNO listener.
 Usage: python3 convert_uno.py <input.doc> <output.docx>
-Connects to soffice --accept listener on port 2002.
+Must be run with a Python that has the 'uno' module (LibreOffice's Python or
+system python3 with python3-uno installed).
 """
 import sys
 import os
 
+
 def convert(input_path, output_path):
-    import uno
+    try:
+        import uno
+    except ImportError:
+        print("ERROR: 'uno' module not found. Install python3-uno.", file=sys.stderr)
+        sys.exit(4)
+
     from com.sun.star.beans import PropertyValue
-    from com.sun.star.lang import DisposedException
 
     localContext = uno.getComponentContext()
     resolver = localContext.ServiceManager.createInstanceWithContext(
@@ -49,10 +56,10 @@ def convert(input_path, output_path):
             make_prop("Overwrite", True),
         ]
         doc.storeToURL(output_url, filter_props)
+        print(f"Converted: {input_path} -> {output_path}", file=sys.stderr)
     finally:
         doc.close(True)
 
-    print(f"Converted: {input_path} -> {output_path}")
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
