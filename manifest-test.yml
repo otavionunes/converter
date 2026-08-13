@@ -1,0 +1,12 @@
+---
+applications:
+  - name: ewaad-converter-test
+    docker:
+      image: ghcr.io/REPLACE_WITH_YOUR_GITHUB_USERNAME/ewaad-converter:latest
+    memory: 512M
+    disk_quota: 2G
+    instances: 1
+    health-check-type: http
+    health-check-http-endpoint: /health
+    env:
+      PYTHONUNBUFFERED: "true"
