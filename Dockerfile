@@ -26,8 +26,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
+COPY start.sh .
+RUN chmod +x start.sh
 
 EXPOSE 8080
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--worker-class", "gevent", \
-     "--workers", "1", "--worker-connections", "5", "--timeout", "120", "app:app"]
+CMD ["/app/start.sh"]
