@@ -43,7 +43,17 @@ def convert(input_path, output_path):
         p.Value = value
         return p
 
-    props = [make_prop("Hidden", True), make_prop("MacroExecutionMode", 4)]
+    # Detect format to set correct import filter
+    with open(input_path, 'rb') as fh:
+        header = fh.read(32)
+    is_wordml = header[:5] == b'<?xml'
+
+    load_filter = "MS Word 2003 XML" if is_wordml else "MS Word 97"
+    props = [
+        make_prop("Hidden", True),
+        make_prop("MacroExecutionMode", 4),
+        make_prop("FilterName", load_filter),
+    ]
     doc = desktop.loadComponentFromURL(input_url, "_blank", 0, props)
 
     if doc is None:
