@@ -16,22 +16,38 @@ def convert(input_path, output_dir):
         sys.exit(1)
 
     # Ensure soffice has a writable HOME and user profile dir
-    home_dir = output_dir
     profile_dir = os.path.join(output_dir, 'lo_profile')
     os.makedirs(profile_dir, exist_ok=True)
 
+    # For WordML XML files, ensure correct encoding declaration
+    with open(input_path, 'rb') as fh:
+        raw = fh.read(32)
+    is_wordml = raw[:5] == b'<?xml'
+
+    # If WordML and no encoding specified, ensure UTF-8 declaration
+    actual_input = input_path
+    if is_wordml:
+        with open(input_path, 'rb') as fh:
+            content = fh.read()
+        # Ensure encoding="UTF-8" in XML declaration if missing
+        if b'encoding=' not in content[:100]:
+            content = content.replace(b'<?xml version="1.0"?>', b'<?xml version="1.0" encoding="UTF-8"?>', 1)
+            fixed_path = input_path + '.fixed.doc'
+            with open(fixed_path, 'wb') as fh:
+                fh.write(content)
+            actual_input = fixed_path
+
     env = {
-        'HOME': home_dir,
+        'HOME': output_dir,
         'PATH': '/usr/bin:/usr/local/bin:/bin',
         'TMPDIR': output_dir,
-        'UserInstallation': f'file://{profile_dir}',
     }
 
     result = subprocess.run(
         [soffice,
          f'-env:UserInstallation=file://{profile_dir}',
          '--headless', '--norestore', '--nolockcheck', '--nocrashreport',
-         '--convert-to', 'docx', '--outdir', output_dir, input_path],
+         '--convert-to', 'docx', '--outdir', output_dir, actual_input],
         capture_output=True,
         timeout=150,
         cwd=output_dir,
