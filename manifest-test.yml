@@ -2,11 +2,13 @@
 applications:
   - name: ewaad-converter-test
     docker:
-      image: ghcr.io/otavionunes/ewaad-converter:latest
+      image: ghcr.io/otavionumes/ewaad-converter:latest
     memory: 512M
     disk_quota: 2G
     instances: 1
     health-check-type: http
     health-check-http-endpoint: /health
+    health-check-invocation-timeout: 10
+    health-check-interval: 60
     env:
       PYTHONUNBUFFERED: "true"
