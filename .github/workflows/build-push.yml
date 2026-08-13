@@ -6,8 +6,8 @@ on:
       - main
 
 env:
-  REGISTRY: ghcr.tools.sap
-  IMAGE_NAME: I857013/ewaad-converter
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/ewaad-converter
 
 jobs:
   build-and-push:
@@ -20,7 +20,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Log in to SAP GitHub Container Registry
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
