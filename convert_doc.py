@@ -43,6 +43,10 @@ def convert(input_path, output_dir):
         'TMPDIR': output_dir,
     }
 
+    # Debug: verify file is readable
+    print(f"Input: {actual_input}, size={os.path.getsize(actual_input)}, readable={os.access(actual_input, os.R_OK)}", file=sys.stderr)
+    print(f"Output dir: {output_dir}, writable={os.access(output_dir, os.W_OK)}", file=sys.stderr)
+
     result = subprocess.run(
         [soffice,
          f'-env:UserInstallation=file://{profile_dir}',
