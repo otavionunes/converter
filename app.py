@@ -23,8 +23,8 @@ log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5MB
-PYTHON3 = '/app/venv/bin/python3'  # venv with --system-site-packages has python3-uno
-CONVERT_UNO = '/app/convert_uno.py'
+PYTHON3 = '/usr/bin/python3'
+CONVERT_SCRIPT = '/app/convert_doc.py'
 JOBS_DIR = '/tmp/ewaad_jobs'
 os.makedirs(JOBS_DIR, exist_ok=True)
 
@@ -38,17 +38,16 @@ def _start_conversion(job_id, input_path, filename):
     jdir = _job_dir(job_id)
     output_path = os.path.join(jdir, 'output.docx')
 
-    # Shell script that runs conversion and writes status file
+    # Shell script: convert_doc.py writes output.docx into jdir
     script = f"""#!/bin/bash
-{PYTHON3} {CONVERT_UNO} '{input_path}' '{output_path}' > '{jdir}/stdout.txt' 2> '{jdir}/stderr.txt'
+{PYTHON3} {CONVERT_SCRIPT} '{input_path}' '{jdir}' > '{jdir}/stdout.txt' 2> '{jdir}/stderr.txt'
 rc=$?
-if [ $rc -eq 0 ] && [ -f '{output_path}' ]; then
+if [ $rc -eq 0 ] && [ -f '{jdir}/output.docx' ]; then
     echo "done" > '{jdir}/status'
 else
     cat '{jdir}/stderr.txt' > '{jdir}/error'
     echo "error" > '{jdir}/status'
 fi
-rm -f '{input_path}'
 """
     script_path = os.path.join(jdir, 'run.sh')
     with open(script_path, 'w') as f:
@@ -92,8 +91,7 @@ def debug():
     except Exception:
         active = -1
     return jsonify({
-        'convert_uno': os.path.exists(CONVERT_UNO),
-        'lo_listener_port_2002': lo_up,
+        'convert_script': os.path.exists(CONVERT_SCRIPT),
         'active_jobs': active,
     }), 200
 
