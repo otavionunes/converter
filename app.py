@@ -102,7 +102,7 @@ def convert():
         result = subprocess.run(
             cmd,
             capture_output=True,
-            timeout=60,
+            timeout=180,
             cwd=tmp_dir,
             env={**os.environ, 'HOME': tmp_dir}
         )
@@ -133,7 +133,7 @@ def convert():
         )
 
     except subprocess.TimeoutExpired:
-        return jsonify({"error": "Conversion timed out (60s limit)"}), 422
+        return jsonify({"error": "Conversion timed out (180s limit)"}), 422
     except Exception as e:
         log.exception("Unexpected error converting %s", original_filename)
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
