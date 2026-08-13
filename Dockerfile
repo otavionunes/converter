@@ -50,6 +50,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
 COPY convert_doc.py .
+COPY convert_wordml.py .
 COPY convert_uno.py .
 COPY start.sh .
 RUN chmod +x start.sh
