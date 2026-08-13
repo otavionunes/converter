@@ -1,6 +1,6 @@
 FROM python:3.11-slim-bookworm
 
-# Install LibreOffice and required shared libraries
+# Install LibreOffice, unoserver (apt version — uses LO's own Python), and tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-writer \
     libreoffice-core \
@@ -15,15 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     libxrender1 \
     netcat-openbsd \
+    unoconv \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Verify LibreOffice install works at build time
+# Verify LibreOffice and unoconv work at build time
 RUN soffice --headless --version
-
-# Install unoserver via pip — it runs with PYTHONPATH pointing to LO's uno module
-# The LO uno module is at /usr/lib/libreoffice/program/
-RUN pip install --no-cache-dir unoserver==3.3
+RUN unoconv --version || true
 
 WORKDIR /app
 

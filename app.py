@@ -1,6 +1,6 @@
 """
 EWAAD Converter — .doc to .docx microservice (Docker version)
-Uses unoserver daemon for fast conversions (~1-2s) instead of cold LibreOffice start (~60s).
+Uses unoconv --listener daemon for fast conversions (~1-2s) vs cold soffice (~60s).
 Accepts a .doc file via POST /convert, returns .docx bytes.
 Internal service — no auth required.
 """
@@ -20,55 +20,46 @@ logging.basicConfig(level=logging.INFO)
 
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5MB
 
-UNOSERVER_CONNECTION = "socket,host=127.0.0.1,port=2003,tcpNoDelay=1"
 SOFFICE_PATH = '/usr/bin/soffice'
-UNOCONVERT = shutil.which('unoconvert') or '/usr/local/bin/unoconvert'
+UNOCONV = shutil.which('unoconv') or '/usr/bin/unoconv'
+UNOCONV_CONNECTION = "socket,host=localhost,port=2002,tcpNoDelay=1"
 
-# unoserver needs LibreOffice's uno module in PYTHONPATH
-LO_PROGRAM_DIR = '/usr/lib/libreoffice/program'
-if LO_PROGRAM_DIR not in os.environ.get('PYTHONPATH', ''):
-    os.environ['PYTHONPATH'] = LO_PROGRAM_DIR + ':' + os.environ.get('PYTHONPATH', '')
-
-log.info("unoconvert: %s exists=%s", UNOCONVERT, os.path.exists(UNOCONVERT))
+log.info("soffice: %s exists=%s", SOFFICE_PATH, os.path.exists(SOFFICE_PATH))
+log.info("unoconv: %s exists=%s", UNOCONV, os.path.exists(UNOCONV))
 
 
-def _convert_via_unoserver(input_path, output_path):
-    """Convert using unoconvert (fast — reuses running LibreOffice daemon)."""
+def _convert_via_unoconv(input_path, output_path):
+    """Convert using unoconv connected to the listener daemon (~1-2s)."""
     cmd = [
-        UNOCONVERT,
-        '--connection', UNOSERVER_CONNECTION,
-        '--convert-to', 'docx',
+        UNOCONV,
+        '--connection', UNOCONV_CONNECTION,
+        '-f', 'docx',
+        '-o', output_path,
         input_path,
-        output_path,
     ]
-    result = subprocess.run(cmd, capture_output=True, timeout=55)
-    return result
+    return subprocess.run(cmd, capture_output=True, timeout=55)
 
 
 def _convert_via_soffice(input_path, outdir):
-    """Fallback: convert using soffice directly (slow cold start)."""
+    """Fallback: cold-start soffice (~60s)."""
     cmd = [
         SOFFICE_PATH, '--headless', '--norestore', '--nolockcheck',
-        '--convert-to', 'docx',
-        '--outdir', outdir,
-        input_path,
+        '--convert-to', 'docx', '--outdir', outdir, input_path,
     ]
-    result = subprocess.run(
+    return subprocess.run(
         cmd, capture_output=True, timeout=170,
         cwd=outdir, env={**os.environ, 'HOME': outdir}
     )
-    return result
 
 
 @app.route('/debug', methods=['GET'])
 def debug():
     return jsonify({
-        'unoconvert': UNOCONVERT,
-        'unoconvert_exists': os.path.exists(UNOCONVERT),
+        'unoconv': UNOCONV,
+        'unoconv_exists': os.path.exists(UNOCONV),
         'soffice_path': SOFFICE_PATH,
         'soffice_exists': os.path.exists(SOFFICE_PATH),
-        'unoserver_connection': UNOSERVER_CONNECTION,
-        'pythonpath': os.environ.get('PYTHONPATH', ''),
+        'unoconv_connection': UNOCONV_CONNECTION,
         'PATH': os.environ.get('PATH', ''),
     }), 200
 
@@ -77,18 +68,13 @@ def debug():
 def health():
     return jsonify({
         "status": "ok",
-        "unoconvert": bool(UNOCONVERT and os.path.exists(UNOCONVERT)),
+        "unoconv": os.path.exists(UNOCONV),
+        "soffice": os.path.exists(SOFFICE_PATH),
     }), 200
 
 
 @app.route('/convert', methods=['OPTIONS', 'POST'])
 def convert():
-    """
-    POST /convert
-    Body: raw .doc bytes (Content-Type: application/octet-stream)
-    Header: X-Filename: original filename (optional)
-    Returns: raw .docx bytes (Content-Type: application/octet-stream)
-    """
     if request.method == 'OPTIONS':
         return '', 204
 
@@ -98,7 +84,6 @@ def convert():
     if len(doc_bytes) > MAX_FILE_BYTES:
         return jsonify({"error": f"File too large ({len(doc_bytes)} bytes, max {MAX_FILE_BYTES})"}), 413
 
-    # Verify it's a .doc file (OLE2 binary or XML-based WordML)
     is_ole2 = doc_bytes[:4] == b'\xd0\xcf\x11\xe0'
     is_wordml = doc_bytes[:5] == b'<?xml' and (
         b'WordDocument' in doc_bytes[:2000] or
@@ -121,23 +106,22 @@ def convert():
 
         output_path = os.path.splitext(input_path)[0] + '.docx'
 
-        # Try unoserver first (fast), fall back to soffice (slow)
-        use_uno = bool(UNOCONVERT and os.path.exists(UNOCONVERT))
-        if use_uno:
-            log.info("Converting %s via unoserver", original_filename)
+        # Try unoconv with listener first (fast)
+        use_unoconv = os.path.exists(UNOCONV)
+        if use_unoconv:
+            log.info("Converting %s via unoconv listener", original_filename)
             try:
-                result = _convert_via_unoserver(input_path, output_path)
-                if result.returncode != 0:
-                    stderr = result.stderr.decode('utf-8', errors='replace')[:500]
-                    stdout = result.stdout.decode('utf-8', errors='replace')[:200]
-                    log.warning("unoconvert failed (rc=%d): %s %s — falling back to soffice",
-                                result.returncode, stderr, stdout)
-                    use_uno = False
+                result = _convert_via_unoconv(input_path, output_path)
+                if result.returncode != 0 or not os.path.exists(output_path):
+                    stderr = result.stderr.decode('utf-8', errors='replace')[:300]
+                    log.warning("unoconv failed (rc=%d): %s — falling back to soffice",
+                                result.returncode, stderr)
+                    use_unoconv = False
             except subprocess.TimeoutExpired:
-                log.warning("unoconvert timed out — falling back to soffice")
-                use_uno = False
+                log.warning("unoconv timed out — falling back to soffice")
+                use_unoconv = False
 
-        if not use_uno:
+        if not use_unoconv:
             log.info("Converting %s via soffice (fallback)", original_filename)
             try:
                 result = _convert_via_soffice(input_path, tmp_dir)
@@ -145,15 +129,11 @@ def convert():
                     stderr = result.stderr.decode('utf-8', errors='replace')[:500]
                     log.error("soffice failed for %s: %s", original_filename, stderr)
                     return jsonify({"error": f"Conversion failed: {stderr}"}), 422
-                # soffice writes to outdir, not output_path directly
-                docx_files = [f for f in os.listdir(tmp_dir) if f.endswith('.docx')]
-                if docx_files:
-                    output_path = os.path.join(tmp_dir, docx_files[0])
             except subprocess.TimeoutExpired:
                 return jsonify({"error": "Conversion timed out"}), 422
 
+        # Find output file
         if not os.path.exists(output_path):
-            # check tmp_dir for any .docx
             docx_files = [f for f in os.listdir(tmp_dir) if f.endswith('.docx')]
             if not docx_files:
                 return jsonify({"error": "LibreOffice produced no .docx output"}), 422
@@ -165,7 +145,7 @@ def convert():
         if len(docx_bytes) < 100 or docx_bytes[:2] != b'PK':
             return jsonify({"error": "Converted output is not a valid .docx file"}), 422
 
-        log.info("Converted %s: %d bytes -> %d bytes", original_filename, len(doc_bytes), len(docx_bytes))
+        log.info("Converted %s: %d -> %d bytes", original_filename, len(doc_bytes), len(docx_bytes))
         docx_name = os.path.splitext(original_filename)[0] + '.docx'
         return Response(
             docx_bytes,
