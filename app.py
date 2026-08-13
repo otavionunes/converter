@@ -9,7 +9,6 @@ import subprocess
 import tempfile
 import shutil
 import logging
-import glob as _glob
 
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
@@ -23,43 +22,20 @@ MAX_FILE_BYTES = 5 * 1024 * 1024  # 5MB
 
 UNOSERVER_CONNECTION = "socket,host=127.0.0.1,port=2003,tcpNoDelay=1"
 SOFFICE_PATH = '/usr/bin/soffice'
+UNOCONVERT = shutil.which('unoconvert') or '/usr/local/bin/unoconvert'
 
-# Find unoconvert — installed under LibreOffice Python's scripts dir
-def _find_unoconvert():
-    candidates = (
-        _glob.glob('/usr/lib/libreoffice/program/unoconvert') +
-        _glob.glob('/usr/local/lib/python*/dist-packages/bin/unoconvert') +
-        [shutil.which('unoconvert') or '']
-    )
-    for c in candidates:
-        if c and os.path.exists(c):
-            return c
-    return None
+# unoserver needs LibreOffice's uno module in PYTHONPATH
+LO_PROGRAM_DIR = '/usr/lib/libreoffice/program'
+if LO_PROGRAM_DIR not in os.environ.get('PYTHONPATH', ''):
+    os.environ['PYTHONPATH'] = LO_PROGRAM_DIR + ':' + os.environ.get('PYTHONPATH', '')
 
-def _find_lo_python():
-    candidates = (
-        _glob.glob('/usr/lib/libreoffice/program/python3*') +
-        _glob.glob('/usr/lib/libreoffice/program/python')
-    )
-    for c in candidates:
-        if c and os.path.exists(c):
-            return c
-    return None
-
-UNOCONVERT = _find_unoconvert()
-LO_PYTHON = _find_lo_python()
-log.info("unoconvert: %s, LO_PYTHON: %s", UNOCONVERT, LO_PYTHON)
+log.info("unoconvert: %s exists=%s", UNOCONVERT, os.path.exists(UNOCONVERT))
 
 
 def _convert_via_unoserver(input_path, output_path):
     """Convert using unoconvert (fast — reuses running LibreOffice daemon)."""
-    # Run as: lo_python unoconvert --connection ... input output
-    cmd = []
-    if LO_PYTHON:
-        cmd = [LO_PYTHON, UNOCONVERT]
-    else:
-        cmd = [UNOCONVERT]
-    cmd += [
+    cmd = [
+        UNOCONVERT,
         '--connection', UNOSERVER_CONNECTION,
         '--convert-to', 'docx',
         input_path,
@@ -88,12 +64,11 @@ def _convert_via_soffice(input_path, outdir):
 def debug():
     return jsonify({
         'unoconvert': UNOCONVERT,
-        'unoconvert_exists': bool(UNOCONVERT and os.path.exists(UNOCONVERT)),
-        'lo_python': LO_PYTHON,
-        'lo_python_exists': bool(LO_PYTHON and os.path.exists(LO_PYTHON)),
+        'unoconvert_exists': os.path.exists(UNOCONVERT),
         'soffice_path': SOFFICE_PATH,
         'soffice_exists': os.path.exists(SOFFICE_PATH),
         'unoserver_connection': UNOSERVER_CONNECTION,
+        'pythonpath': os.environ.get('PYTHONPATH', ''),
         'PATH': os.environ.get('PATH', ''),
     }), 200
 
