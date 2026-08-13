@@ -15,9 +15,22 @@ def convert(input_path, output_dir):
         print(f"ERROR: soffice not found at {soffice}", file=sys.stderr)
         sys.exit(1)
 
-    env = {**os.environ, 'HOME': output_dir}
+    # Ensure soffice has a writable HOME and user profile dir
+    home_dir = output_dir
+    profile_dir = os.path.join(output_dir, 'lo_profile')
+    os.makedirs(profile_dir, exist_ok=True)
+
+    env = {
+        'HOME': home_dir,
+        'PATH': '/usr/bin:/usr/local/bin:/bin',
+        'TMPDIR': output_dir,
+        'UserInstallation': f'file://{profile_dir}',
+    }
+
     result = subprocess.run(
-        [soffice, '--headless', '--norestore', '--nolockcheck',
+        [soffice,
+         f'-env:UserInstallation=file://{profile_dir}',
+         '--headless', '--norestore', '--nolockcheck', '--nocrashreport',
          '--convert-to', 'docx', '--outdir', output_dir, input_path],
         capture_output=True,
         timeout=150,
