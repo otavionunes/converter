@@ -61,7 +61,9 @@ def _run_conversion(job_id, input_path, output_path, tmp_dir, original_filename)
                     log.warning("[%s] UNO failed (rc=%d): %s — trying soffice",
                                 job_id, result.returncode, stderr)
             except subprocess.TimeoutExpired:
-                log.warning("[%s] UNO timed out — trying soffice", job_id)
+                log.warning("[%s] UNO timed out — killing LO listener to free memory before soffice", job_id)
+                subprocess.run(['pkill', '-f', 'soffice.*accept'], capture_output=True)
+                import time; time.sleep(2)
 
         if not success:
             log.info("[%s] Converting %s via soffice", job_id, original_filename)
