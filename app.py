@@ -3,24 +3,19 @@ EWAAD Converter — async .doc to .docx via LibreOffice UNO listener
 POST /convert    → {"job_id": "..."} immediately (202)
 GET  /result/<id> → 202 pending, 200 + bytes done, 422 error
 
-Uses multiprocessing.Process for conversion (no GIL blocking).
-UNO listener is the fast path (~2-5s). No soffice fallback (avoids OOM).
+Job state stored as files in /tmp/ewaad_jobs/<id>/{status,output.docx,error}.
+Conversion runs in subprocess — no GIL, /convert always returns in <1s.
 """
 import os
 import subprocess
 import tempfile
 import shutil
 import logging
-import multiprocessing
 import uuid
 import time
-import json
 
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
-
-# Must use spawn context to avoid fork issues with LibreOffice
-_mp_ctx = multiprocessing.get_context('fork')
 
 app = Flask(__name__)
 CORS(app)
@@ -30,59 +25,56 @@ logging.basicConfig(level=logging.INFO)
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5MB
 PYTHON3 = '/usr/bin/python3'
 CONVERT_UNO = '/app/convert_uno.py'
-
-# Shared job state via Manager dict
-_manager = _mp_ctx.Manager()
-_jobs = _manager.dict()
+JOBS_DIR = '/tmp/ewaad_jobs'
+os.makedirs(JOBS_DIR, exist_ok=True)
 
 
-def _convert_process(job_id, input_path, tmp_dir, filename, jobs_dict):
-    """Runs in a separate process — no GIL, won't block Flask."""
-    output_path = os.path.splitext(input_path)[0] + '.docx'
-    try:
-        result = subprocess.run(
-            [PYTHON3, CONVERT_UNO, input_path, output_path],
-            capture_output=True, timeout=55
-        )
-        stderr = result.stderr.decode('utf-8', errors='replace')
-        stdout = result.stdout.decode('utf-8', errors='replace')
+def _job_dir(job_id):
+    return os.path.join(JOBS_DIR, job_id)
 
-        if result.returncode != 0 or not os.path.exists(output_path):
-            raise RuntimeError(f"UNO failed (rc={result.returncode}): {stderr[:300]}")
 
-        with open(output_path, 'rb') as f:
-            docx_bytes = f.read()
+def _start_conversion(job_id, input_path, filename):
+    """Launch conversion as detached subprocess — returns immediately."""
+    jdir = _job_dir(job_id)
+    output_path = os.path.join(jdir, 'output.docx')
 
-        if len(docx_bytes) < 100 or docx_bytes[:2] != b'PK':
-            raise RuntimeError("Output is not a valid .docx")
+    # Shell script that runs conversion and writes status file
+    script = f"""#!/bin/bash
+{PYTHON3} {CONVERT_UNO} '{input_path}' '{output_path}' > '{jdir}/stdout.txt' 2> '{jdir}/stderr.txt'
+rc=$?
+if [ $rc -eq 0 ] && [ -f '{output_path}' ]; then
+    echo "done" > '{jdir}/status'
+else
+    cat '{jdir}/stderr.txt' > '{jdir}/error'
+    echo "error" > '{jdir}/status'
+fi
+rm -f '{input_path}'
+"""
+    script_path = os.path.join(jdir, 'run.sh')
+    with open(script_path, 'w') as f:
+        f.write(script)
+    os.chmod(script_path, 0o755)
 
-        jobs_dict[job_id] = {
-            'status': 'done',
-            'result_bytes': docx_bytes,
-            'docx_name': os.path.splitext(filename)[0] + '.docx',
-            'error': None,
-            'created_at': jobs_dict[job_id]['created_at'],
-        }
-    except Exception as e:
-        jobs_dict[job_id] = {
-            'status': 'error',
-            'result_bytes': None,
-            'docx_name': None,
-            'error': str(e),
-            'created_at': jobs_dict[job_id]['created_at'],
-        }
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+    # Launch detached — does NOT block Flask
+    subprocess.Popen(
+        ['/bin/bash', script_path],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True
+    )
 
 
 def _cleanup_old_jobs():
-    cutoff = time.time() - 600
-    stale = [k for k, v in _jobs.items() if v.get('created_at', 0) < cutoff]
-    for k in stale:
-        try:
-            del _jobs[k]
-        except Exception:
-            pass
+    """Remove job dirs older than 10 minutes."""
+    try:
+        cutoff = time.time() - 600
+        for jid in os.listdir(JOBS_DIR):
+            jdir = os.path.join(JOBS_DIR, jid)
+            if os.path.isdir(jdir) and os.path.getmtime(jdir) < cutoff:
+                shutil.rmtree(jdir, ignore_errors=True)
+    except Exception:
+        pass
 
 
 @app.route('/debug', methods=['GET'])
@@ -95,10 +87,14 @@ def debug():
         lo_up = True
     except Exception:
         pass
+    try:
+        active = len(os.listdir(JOBS_DIR))
+    except Exception:
+        active = -1
     return jsonify({
         'convert_uno': os.path.exists(CONVERT_UNO),
         'lo_listener_port_2002': lo_up,
-        'active_jobs': len(_jobs),
+        'active_jobs': active,
     }), 200
 
 
@@ -132,28 +128,23 @@ def convert():
     if not filename.lower().endswith('.doc'):
         filename += '.doc'
 
-    tmp_dir = tempfile.mkdtemp(prefix="ewaad_conv_")
-    input_path = os.path.join(tmp_dir, filename)
+    job_id = str(uuid.uuid4())
+    jdir = _job_dir(job_id)
+    os.makedirs(jdir, exist_ok=True)
+
+    input_path = os.path.join(jdir, filename)
     with open(input_path, 'wb') as f:
         f.write(doc_bytes)
 
-    job_id = str(uuid.uuid4())
-    _cleanup_old_jobs()
-    _jobs[job_id] = {
-        'status': 'pending',
-        'result_bytes': None,
-        'docx_name': os.path.splitext(filename)[0] + '.docx',
-        'error': None,
-        'created_at': time.time(),
-    }
+    with open(os.path.join(jdir, 'status'), 'w') as f:
+        f.write('pending')
+    with open(os.path.join(jdir, 'filename'), 'w') as f:
+        f.write(filename)
 
-    p = _mp_ctx.Process(
-        target=_convert_process,
-        args=(job_id, input_path, tmp_dir, filename, _jobs),
-        daemon=True
-    )
-    p.start()
-    log.info("Started process pid=%d job=%s file=%s", p.pid, job_id, filename)
+    _cleanup_old_jobs()
+    _start_conversion(job_id, input_path, filename)
+
+    log.info("Queued job %s for %s", job_id, filename)
     return jsonify({"job_id": job_id}), 202
 
 
@@ -162,25 +153,44 @@ def result(job_id):
     if request.method == 'OPTIONS':
         return '', 204
 
-    job = _jobs.get(job_id)
-    if job is None:
+    # Sanitize job_id
+    if not job_id or '/' in job_id or '..' in job_id:
+        return jsonify({"error": "Invalid job id"}), 400
+
+    jdir = _job_dir(job_id)
+    if not os.path.isdir(jdir):
         return jsonify({"error": "Job not found"}), 404
-    if job['status'] == 'pending':
+
+    status_file = os.path.join(jdir, 'status')
+    if not os.path.exists(status_file):
         return jsonify({"status": "pending"}), 202
-    if job['status'] == 'error':
-        err = job['error']
-        try:
-            del _jobs[job_id]
-        except Exception:
-            pass
+
+    with open(status_file) as f:
+        status = f.read().strip()
+
+    if status == 'pending':
+        return jsonify({"status": "pending"}), 202
+
+    if status == 'error':
+        error_file = os.path.join(jdir, 'error')
+        err = open(error_file).read()[:300] if os.path.exists(error_file) else "Unknown error"
+        shutil.rmtree(jdir, ignore_errors=True)
         return jsonify({"error": err}), 422
 
-    docx_bytes = job['result_bytes']
-    docx_name = job['docx_name']
-    try:
-        del _jobs[job_id]
-    except Exception:
-        pass
+    # done
+    output_path = os.path.join(jdir, 'output.docx')
+    if not os.path.exists(output_path):
+        shutil.rmtree(jdir, ignore_errors=True)
+        return jsonify({"error": "Output file missing"}), 422
+
+    with open(output_path, 'rb') as f:
+        docx_bytes = f.read()
+
+    filename_file = os.path.join(jdir, 'filename')
+    orig = open(filename_file).read().strip() if os.path.exists(filename_file) else 'output.doc'
+    docx_name = os.path.splitext(orig)[0] + '.docx'
+
+    shutil.rmtree(jdir, ignore_errors=True)
 
     return Response(
         docx_bytes,
