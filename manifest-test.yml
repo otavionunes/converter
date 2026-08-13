@@ -2,7 +2,7 @@
 applications:
   - name: ewaad-converter-test
     docker:
-      image: ghcr.io/otavionumes/ewaad-converter:latest
+      image: ghcr.io/otavionunes/ewaad-converter:latest
     memory: 512M
     disk_quota: 2G
     instances: 1

@@ -1,8 +1,9 @@
 """
-EWAAD Converter — async .doc to .docx (simple sequential queue)
-POST /convert    → {"job_id": "..."} immediately
+EWAAD Converter — async .doc to .docx via LibreOffice UNO listener
+POST /convert    → {"job_id": "..."} immediately (202)
 GET  /result/<id> → 202 pending, 200 + bytes done, 422 error
-One conversion at a time (soffice is single-instance).
+Uses soffice --accept UNO listener (one warm process, ~2-5s per conversion).
+No soffice fallback — avoids OOM from two concurrent LibreOffice processes.
 """
 import os
 import subprocess
@@ -23,37 +24,41 @@ log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5MB
-SOFFICE_PATH = '/usr/bin/soffice'
+SOFFICE = '/usr/bin/soffice'
+PYTHON3 = '/usr/bin/python3'
+CONVERT_UNO = '/app/convert_uno.py'
 
-# Job store: job_id -> {status, result_bytes, error, created_at, docx_name}
+# Job store
 _jobs = {}
 _jobs_lock = threading.Lock()
-
-# Single worker queue — ensures only one soffice runs at a time
 _work_queue = queue.Queue()
 
 
+def _cleanup_old_jobs():
+    cutoff = time.time() - 600
+    with _jobs_lock:
+        stale = [k for k, v in _jobs.items() if v.get('created_at', 0) < cutoff]
+        for k in stale:
+            del _jobs[k]
+
+
 def _worker():
-    """Background thread: process one conversion at a time."""
+    """Single background thread — one conversion at a time via UNO."""
     while True:
-        job_id, input_path, tmp_dir, original_filename = _work_queue.get()
+        job_id, input_path, tmp_dir, filename = _work_queue.get()
         output_path = os.path.splitext(input_path)[0] + '.docx'
         try:
-            log.info("[%s] Converting %s via soffice", job_id, original_filename)
+            log.info("[%s] Converting %s via UNO", job_id, filename)
             result = subprocess.run(
-                [SOFFICE_PATH, '--headless', '--norestore', '--nolockcheck',
-                 '--convert-to', 'docx', '--outdir', tmp_dir, input_path],
-                capture_output=True, timeout=180,
-                cwd=tmp_dir, env={**os.environ, 'HOME': tmp_dir}
+                [PYTHON3, CONVERT_UNO, input_path, output_path],
+                capture_output=True, timeout=55
             )
-            if result.returncode != 0:
-                raise RuntimeError(result.stderr.decode('utf-8', errors='replace')[:300])
+            stdout = result.stdout.decode('utf-8', errors='replace')
+            stderr = result.stderr.decode('utf-8', errors='replace')
+            log.info("[%s] UNO rc=%d stdout=%s stderr=%s", job_id, result.returncode, stdout[:200], stderr[:200])
 
-            if not os.path.exists(output_path):
-                docx_files = [f for f in os.listdir(tmp_dir) if f.endswith('.docx')]
-                if not docx_files:
-                    raise RuntimeError("No .docx output produced")
-                output_path = os.path.join(tmp_dir, docx_files[0])
+            if result.returncode != 0 or not os.path.exists(output_path):
+                raise RuntimeError(f"UNO conversion failed (rc={result.returncode}): {stderr[:300]}")
 
             with open(output_path, 'rb') as f:
                 docx_bytes = f.read()
@@ -61,11 +66,11 @@ def _worker():
             if len(docx_bytes) < 100 or docx_bytes[:2] != b'PK':
                 raise RuntimeError("Output is not a valid .docx file")
 
-            log.info("[%s] Done: %s -> %d bytes", job_id, original_filename, len(docx_bytes))
+            log.info("[%s] Done: %s -> %d bytes", job_id, filename, len(docx_bytes))
             with _jobs_lock:
                 _jobs[job_id]['status'] = 'done'
                 _jobs[job_id]['result_bytes'] = docx_bytes
-                _jobs[job_id]['docx_name'] = os.path.splitext(original_filename)[0] + '.docx'
+                _jobs[job_id]['docx_name'] = os.path.splitext(filename)[0] + '.docx'
 
         except Exception as e:
             log.error("[%s] Failed: %s", job_id, e)
@@ -77,23 +82,24 @@ def _worker():
             _work_queue.task_done()
 
 
-# Start single worker thread
 _worker_thread = threading.Thread(target=_worker, daemon=True)
 _worker_thread.start()
 
 
-def _cleanup_old_jobs():
-    cutoff = time.time() - 600
-    with _jobs_lock:
-        old = [jid for jid, j in _jobs.items() if j.get('created_at', 0) < cutoff]
-        for jid in old:
-            del _jobs[jid]
-
-
 @app.route('/debug', methods=['GET'])
 def debug():
+    import socket
+    lo_up = False
+    try:
+        s = socket.create_connection(('localhost', 2002), timeout=1)
+        s.close()
+        lo_up = True
+    except Exception:
+        pass
     return jsonify({
-        'soffice': os.path.exists(SOFFICE_PATH),
+        'soffice': os.path.exists(SOFFICE),
+        'convert_uno': os.path.exists(CONVERT_UNO),
+        'lo_listener_port_2002': lo_up,
         'queue_size': _work_queue.qsize(),
         'active_jobs': len(_jobs),
     }), 200
@@ -101,7 +107,7 @@ def debug():
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({"status": "ok", "soffice": os.path.exists(SOFFICE_PATH)}), 200
+    return jsonify({"status": "ok"}), 200
 
 
 @app.route('/convert', methods=['OPTIONS', 'POST'])
@@ -146,7 +152,7 @@ def convert():
         }
 
     _work_queue.put((job_id, input_path, tmp_dir, original_filename))
-    log.info("Queued job %s for %s (queue depth: %d)", job_id, original_filename, _work_queue.qsize())
+    log.info("Queued job %s for %s (queue=%d)", job_id, original_filename, _work_queue.qsize())
     return jsonify({"job_id": job_id}), 202
 
 
